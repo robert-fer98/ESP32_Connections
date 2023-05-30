@@ -30,6 +30,10 @@
 #include "esp_gatt_common_api.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
+#include "driver/gpio.h"
+#include "esp_timer.h"
 
 #define GATTC_TAG "GATTC_DEMO"
 #define REMOTE_SERVICE_UUID        0x00FF
@@ -37,6 +41,18 @@
 #define PROFILE_NUM      1
 #define PROFILE_A_APP_ID 0
 #define INVALID_HANDLE   0
+
+#define TIME_TAG "TIME"
+
+// LED stuff
+
+#define LED_PIN 15
+int state = 0;
+bool ledState = false;
+bool update = false;
+QueueHandle_t interputQueue;
+
+// LED stuff - end
 
 static const char remote_device_name[] = "ESP_GATTS_DEMO";
 static bool connect    = false;
@@ -48,6 +64,7 @@ static esp_gattc_descr_elem_t *descr_elem_result = NULL;
 static void esp_gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param);
 static void esp_gattc_cb(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if, esp_ble_gattc_cb_param_t *param);
 static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if, esp_ble_gattc_cb_param_t *param);
+void LED_Control_Task();
 
 
 static esp_bt_uuid_t remote_filter_service_uuid = {
@@ -302,6 +319,8 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
             break;
         }
         ESP_LOGI(GATTC_TAG, "write char success ");
+        ESP_LOGI(TIME_TAG, "TIME Call LED - %lu", (unsigned long) (esp_timer_get_time() / 1000ULL));
+        LED_Control_Task();
         break;
     case ESP_GATTC_DISCONNECT_EVT:
         connect = false;
@@ -434,6 +453,36 @@ static void esp_gattc_cb(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if, esp
     } while (0);
 }
 
+static void IRAM_ATTR gpio_interrupt_handler(void *args){
+
+    ledState = !ledState;
+    update = true;
+    //int pinNumber = (int)args;
+    //xQueueSendFromISR(interputQueue, &pinNumber, NULL);
+}
+
+void LED_Control_Task(){
+    int led_state = gpio_get_level(LED_PIN);
+        if (led_state == 0) {
+                gpio_set_level(LED_PIN, 1);
+                ESP_LOGI(TIME_TAG, "TIME After LED turn on - %lu", (unsigned long) (esp_timer_get_time() / 1000ULL));
+        }
+        else {
+                gpio_set_level(LED_PIN, 0);
+        }
+}
+
+
+void setup_led() {
+    esp_rom_gpio_pad_select_gpio(LED_PIN);
+    gpio_set_direction(LED_PIN, GPIO_MODE_OUTPUT);
+
+    interputQueue = xQueueCreate(10, sizeof(int));
+
+    //xTaskCreate(LED_Control_Task, "LED_Control_Task", 2048, NULL, 2, NULL);
+   // gpio_install_isr_service(0);
+}
+
 void app_main(void)
 {
     // Initialize NVS.
@@ -442,7 +491,13 @@ void app_main(void)
         ESP_ERROR_CHECK(nvs_flash_erase());
         ret = nvs_flash_init();
     }
+      const esp_timer_create_args_t my_timer_args = {
+      .name = "My Timer"};
+  esp_timer_handle_t timer_handler;
+    esp_timer_create(&my_timer_args, &timer_handler);
     ESP_ERROR_CHECK( ret );
+
+    setup_led();
 
     ESP_ERROR_CHECK(esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT));
 

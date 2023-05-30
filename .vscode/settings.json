@@ -1,0 +1,6 @@
+{
+    "files.associations": {
+        "stdio.h": "c",
+        "esp_nimble_hci.h": "c"
+    }
+}

@@ -1,0 +1,3 @@
+Samo se ovi GPIO inputi mogu koristiti kao Input - 0-19, 21-23, 25-27, 32-39 
+
+https://github.com/craftmetrics/esp32-button 

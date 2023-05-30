@@ -1,0 +1,31 @@
+1. klijent
+2. sever
+
+Kako komuniciraju?
+
+Koriste se SPP + GATT profili
+
+Klijent traži sve dostupne uređaje te se spaja na server nakon što ga pronađe. 
+Klijent od servera dobiva NOTIFIKACIJE od karakteristike servera (UUID = 0xff01). Svaki puta kada se promijeni vrijednost,
+server šalje notifikaciju klijentu
+
+
+Kad 1 šalje na 2 - aktivira se EVT 4 - ESP_GATTTC_WRITE_CHAR_EVT - definirano u esp_gattc_api.h - ESP_GATTS_WRITE_EVT
+Kad 2 prima od 1 - aktivira se EVT 2 - GATTS_WRITE_EVT
+
+
+Kad 2 šalje na 1 - aktivira se EVT 5 - CONF_EVT
+Kad 1 prima od 2 - aktivira se EVT 10 - ESP_GATTC_NOTIFY_EVT
+
+LED_Control_Task je obična funkcija, poziva se u određenim callbackovima evenata.
+Uređaji su spojeni na računalo te se poruke šalju preko tipkovnice. Bilo koji pritisak tipkovnice poslat će poruku s jednim znakom. 
+Na taj event upalit će se ili ugasit LEDice. LEDice su spojene na GPIO_32 na oba uređaja.
+
+
+
+Okej to si napravio, dalje:
+- dodaj button press
+- dodaj timer
+- dodaj update na button press/tipkovnicu 
+- razmisli kako ces izmjerit ovo (neko vracanje eventa isto?)
+- dodaj taskove za ledice (zasad je obična funkcija)
