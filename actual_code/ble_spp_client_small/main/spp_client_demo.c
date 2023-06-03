@@ -4,6 +4,9 @@
  * SPDX-License-Identifier: Unlicense OR CC0-1.0
  */
 
+// Kod baziran na primjeru Espressif-a
+// Modifikacije: Robert Medvedec
+
 /****************************************************************************
 *
 * This file is for ble spp client demo.
@@ -39,13 +42,14 @@
 // TIMER IMPORTS
 #include "esp_timer.h"
 
-
 #define INPUT_PIN 32
 #define LED_PIN 33
 
 static const char *LED_TAG = "LED";
 static const char *TIMER_TAG = "TIMER";
 
+void LED_control_task(void *ledPin);
+void timer_callback(void *param);
 
 #define GATTC_TAG                   "BLE_CLIENT"
 #define PROFILE_NUM                 1
@@ -55,6 +59,13 @@ static const char *TIMER_TAG = "TIMER";
 #define ESP_GATT_SPP_SERVICE_UUID   0xABF0
 #define SCAN_ALL_THE_TIME           0
 
+
+///////////////////////////////////////////
+/////// STRUKTURE ZA SINKRONIZACIJU ///////
+/////// SYNCHORNIZATION STRUCTURES ////////
+///////////////////////////////////////////
+
+// struktura u koju se zapisuju podatci o vremenima poruka koje se šalju s klijenta na server
 struct client_send_message {
     int64_t c_time_send_signal;
     int64_t c_time_send_message;
@@ -62,17 +73,56 @@ struct client_send_message {
     int64_t c_time_last_message_travel_time;
 } client_message;
 
+// struktura u koju se zapisuju podatci o vremenima poruka koje se šalju sa servera prema klijentu
 struct server_send_message {
     int64_t s_time_received_message;
     int64_t s_time_send_reply;
     int64_t s_time_total_response;
 } server_message;
 
+// struktura u koju se zapisuje sadržaj i duljina sadržaja poruke koja se šalje od klijenta prema serveru
 struct client_basic_message {
     char * client_message;
     uint8_t client_message_length;
 } client_basic_message;
 
+///////////////////////////////////////////
+///////////////////////////////////////////
+
+bool client_initiated_message = false;
+esp_timer_handle_t timer_handler;
+
+///////////////////////////////////////////
+////////// FUNKCIJE POSTAVLJANJA //////////
+///////////// SETUP FUNCTIONS /////////////
+///////////////////////////////////////////
+
+void led_setup() {
+    esp_rom_gpio_pad_select_gpio(LED_PIN);
+    gpio_set_direction(LED_PIN, GPIO_MODE_INPUT_OUTPUT); // has to be INPUT_OUTPUT to be able to read it
+    gpio_set_level(LED_PIN, 0);
+    //ESP_LOGI(LED_TAG, "Turn the LED on");
+}
+
+void client_message_setup() {
+    client_basic_message.client_message = NULL;
+    client_basic_message.client_message_length = 6;
+    client_basic_message.client_message = (char *)malloc(sizeof(char) * client_basic_message.client_message_length);
+    char *str = "c_reply";
+    memset(client_basic_message.client_message, 0x0, client_basic_message.client_message_length);
+    strcpy(client_basic_message.client_message, str);
+}
+
+void timer_setup() {
+    esp_timer_early_init();
+    const esp_timer_create_args_t my_timer_args = {
+        .callback = &timer_callback,
+        .name = "Timer client"};
+    ESP_ERROR_CHECK(esp_timer_create(&my_timer_args, &timer_handler));
+}
+
+///////////////////////////////////////////
+///////////////////////////////////////////
 
 struct gattc_profile_inst {
     esp_gattc_cb_t gattc_cb;
@@ -85,13 +135,12 @@ struct gattc_profile_inst {
     esp_bd_addr_t remote_bda;
 };
 
+/*
 struct sync_info_package { // don't send the whole package because it'll probably take longer
     int64_t timer_value;
     char* timer_value_char;
     uint8_t timer_value_char_length;
-};
-
-bool client_initiated_message = false;
+};*/
 
 enum{
     SPP_IDX_SVC,
@@ -100,13 +149,14 @@ enum{
 
     SPP_IDX_SPP_DATA_NTY_VAL,
     SPP_IDX_SPP_DATA_NTF_CFG,
+    //SPP_IDX_SPP_DATA_NOTIFY_CHAR,
 
     SPP_IDX_SPP_COMMAND_VAL,
 
     SPP_IDX_SPP_STATUS_VAL,
     SPP_IDX_SPP_STATUS_CFG,
 
-    SPP_IDX_NB,
+    SPP_IDX_NB
 };
 
 ///Declare static functions
@@ -153,26 +203,55 @@ static esp_bt_uuid_t spp_service_uuid = {
     .uuid = {.uuid16 = ESP_GATT_SPP_SERVICE_UUID,},
 };
 
-// time of conversion from timer to this is around 3.3-4ms (3300-4000 us) = we can add this value to the measurement
-char* timerValueToCharArray(int64_t currentTime) {
-        char currentTimeCharArray[12];
-        itoa(currentTime, currentTimeCharArray, 10);
-        char *temp_my = NULL;
-        temp_my = (char *)malloc(12);
-        //uint8_t sizeOfMy = 12*sizeof(char);
-        strcpy(temp_my, currentTimeCharArray);
-        return temp_my;
+///////////////////////////////////////////
+///////////// POMOĆNE FUNKCIJE ////////////
+/////////// AUXILIARY FUNCTIONS ///////////
+///////////////////////////////////////////
+
+void timer_callback(void *param) {
+    LED_control_task((void *)LED_PIN);
 }
 
-// time of conversion is around 10 us
-int64_t charArrayToTimerValue(char* arrayValue) {
+// [ENG] start the local timer
+// [HRV] pokretanje lokalnog brojača
+void timer_start() {
+    // enable CONFIG_ESP_TIMER_PROFILING in sdkconfig for more details on timers
+    uint64_t timePeriod = 10000000; // in microseconds;
+    if (esp_timer_is_active(timer_handler)) {
+        printf("\nUntil next timer event = %lld ms\n", (esp_timer_get_next_alarm() - esp_timer_get_time())/1000);
+    }
+    else {
+        printf("\nTimer is being activated - period time = %llu ms", timePeriod/1000);
+        LED_control_task((void *)LED_PIN);  
+        ESP_ERROR_CHECK(esp_timer_start_periodic(timer_handler, timePeriod)); // period time in microseconds
+    }
+}
+
+// [ENG] stop the local timer
+// [HRV] zaustavljanje lokalnog brojača
+void timer_stop() {
+    if (esp_timer_is_active(timer_handler)) {
+        esp_timer_stop(timer_handler);
+    }
+}
+
+// [ENG] converts timer value (char array) to int64_t
+// time of conversion is around 10 us (irrelevant)
+// [HRV] konvertira vrijeme brojača (char array) u int64_t
+// vrijeme konverzije je oko 10 us (nebitno)
+int64_t char_array_to_timer_value(char *arrayValue)
+{
     return strtoll(arrayValue, NULL, 10);
 }
 
-// time of conversion from timer to this is around 3.3-4ms (3300-4000 us) = we can add this value to the measurement - 3800
+// [ENG] converts timer value (int64_t) to char array
+// time of conversion from timer to this is around 3.3-4ms (3300-4000 us) - we can add this value to the measurement - 3700
+// [HRV] konvertira vrijeme brojača (int64_t) u char array
+// vrijeme konverzije je između 3.3-4ms (3300-4000 us) - tu vrijednost možemo dodati na brojač ako je potrebno (cca. 3700)
 char *timer_value_to_char_array(int64_t currentTime, bool addFunctionTime)
 {
-    if (addFunctionTime) currentTime += 3800;
+    if (addFunctionTime)
+        currentTime += 3700;
     char currentTimeCharArray[12];
     itoa(currentTime, currentTimeCharArray, 10);
     char *temp_my = NULL;
@@ -182,19 +261,14 @@ char *timer_value_to_char_array(int64_t currentTime, bool addFunctionTime)
     return temp_my;
 }
 
-// time of conversion is around 10 us
-int64_t char_array_to_timer_value(char *arrayValue)
-{
-    return strtoll(arrayValue, NULL, 10);
+// [ENG] calculates response time from the client 
+// [HRV] računa vrijeme odgovora klijenta
+int64_t calculate_client_response_time(){
+    return server_message.s_time_total_response = server_message.s_time_send_reply - server_message.s_time_received_message;
 }
 
-
-// function duration = TODO
-int64_t calculate_client_response_time(int64_t incomingTimer, int64_t clientStart){ // this
-    return incomingTimer + (esp_timer_get_time() - clientStart); // esp_timer_get_time() is around 1 us so it doesn't really matter
-}
-
-// calculate how long does this last
+// [ENG] concatenets local timer value and the response time value ready to be sent to the server
+// [HRV] pripreme za slanje tekst koji sadrži lokalno vrijeme brojača i vrijeme odgovora prema serveru
 char *timer_and_response_message_reply() {
     char *temp_my = NULL;
     temp_my = (char *)malloc(26);
@@ -205,12 +279,83 @@ char *timer_and_response_message_reply() {
     return temp_my;
 }
 
-//int64_t calculate_server_response_time() {
-   // return client_message.c_time_received_response - client_message.c_time_sent;
-//}
+
+///////////////////////////////////////////
+///////////////////////////////////////////
+
+///////////////////////////////////////////
+///////////// FUNKCIJE ZADATAKA ///////////
+////////////// TASK FUNCTIONS /////////////
+///////////////////////////////////////////
+
+void LED_control_task(void *ledPin){ // parameters can be empty
+    int led_state = gpio_get_level(LED_PIN);
+        if (led_state == 0) {
+                gpio_set_level(LED_PIN, 1);
+                //ESP_LOGI(TIME_TAG, "TIME After LED turn on - %lu", (unsigned long) (esp_timer_get_time() / 1000ULL));
+                //ESP_LOGI(LED_TAG, "Turn the LED on");
+            
+        }
+        else {
+                gpio_set_level(LED_PIN, 0);
+                //ESP_LOGI(LED_TAG, "Turn the LED off");
+        }
+    //vTaskDelete(NULL);
+}
+
+void uart_task(void *pvParameters)
+{
+    uart_event_t event;
+    for (;;) {
+        //Waiting for UART event.
+        if (xQueueReceive(spp_uart_queue, (void * )&event, (TickType_t)portMAX_DELAY)) {
+            client_message.c_time_send_signal = esp_timer_get_time(); // UART singal received
+            client_initiated_message = true; // info that the message came from the client
+            switch (event.type) {
+            //Event of UART receving data
+            case UART_DATA:
+                if (event.size && (is_connect == true) && (db != NULL) && ((db+SPP_IDX_SPP_DATA_RECV_VAL)->properties & (ESP_GATT_CHAR_PROP_BIT_WRITE_NR | ESP_GATT_CHAR_PROP_BIT_WRITE))) {
+                    uint8_t * temp = NULL;
+                    temp = (uint8_t *)malloc(sizeof(uint8_t)*event.size);
+                    if(temp == NULL){
+                        ESP_LOGE(GATTC_TAG, "malloc failed,%s L#%d\n", __func__, __LINE__);
+                        break;
+                    }
+                    LED_control_task((void*) LED_PIN);
+                    memset(temp, 0x0, event.size);
+                    uart_read_bytes(UART_NUM_0,temp,event.size,portMAX_DELAY);
+
+                    int64_t currentTime = esp_timer_get_time(); // get this time and use it - izmjeri koliko je izmedu tog i ovog write charr
+                    char *temp_my = timer_value_to_char_array(currentTime, false);
+                    client_message.c_time_send_message = esp_timer_get_time();
+                    esp_ble_gattc_write_char( spp_gattc_if,
+                                              spp_conn_id,
+                                              (db+SPP_IDX_SPP_DATA_RECV_VAL)->attribute_handle,
+                                              12*sizeof(char), // size of char array temp my
+                                              (uint8_t*) temp_my,
+                                              //ESP_GATT_WRITE_TYPE_NO_RSP, // this should shorten the time
+                                              ESP_GATT_WRITE_TYPE_RSP,
+                                              ESP_GATT_AUTH_REQ_NONE);
+
+                    free(temp);
+                    free(temp_my);
+                }
+                break;
+            default:
+                break;
+            }
+        }
+    }
+    vTaskDelete(NULL);
+}
+
+///////////////////////////////////////////
+///////////////////////////////////////////
 
 
-
+// kod primanja poruke od servera poziva se ova funkcija
+// ako je server inicirao poruku, zapisat će se vrijeme primanja odgovora na poruku od klijenta 
+// ako je poruku inicirao klijent, zapisat će se vrijeme primanja poruke od klijenta i vrijeme trajanja putovanja poruke
 static void notify_event_handler(esp_ble_gattc_cb_param_t * p_data)
 {
     uint8_t handle = 0;
@@ -273,17 +418,23 @@ static void notify_event_handler(esp_ble_gattc_cb_param_t * p_data)
                     return;
                 }
                 notify_value_offset += (p_data->notify.value_len - 4);
+                return;
             }
-        }else{
-            uart_write_bytes(UART_NUM_0, (char *)(p_data->notify.value), p_data->notify.value_len);
-            //client_message_1.c_time_received_response = (int64_t) charArrayToTimerValue((char *)(p_data->notify.value));
-            //int64_t responseTime = calculate_server_response_time();
-            //ESP_LOGE("TIMER", "Server response time is %llu", responseTime);
-            if (client_initiated_message == false) {
-                server_message.s_time_send_reply = esp_timer_get_time();
-                server_message.s_time_total_response = server_message.s_time_send_reply - server_message.s_time_received_message;
+
+        } // ovo mozemo koristiti za to kad je timer servera iza timera klijenta
+        else if(p_data->notify.value[0] == 'm') { // ovo radi bez beda this actually works
+            
+        } else if(p_data->notify.value[0] == 'p') {
+            timer_stop();
+            timer_start();
+        }
+        
+        uart_write_bytes(UART_NUM_0, (char *)(p_data->notify.value), p_data->notify.value_len);
+        if (client_initiated_message == false) {
+            server_message.s_time_send_reply = esp_timer_get_time();
+            calculate_client_response_time();
                 
-                esp_ble_gattc_write_char( spp_gattc_if,
+            esp_ble_gattc_write_char( spp_gattc_if,
                                               spp_conn_id,
                                               (db+SPP_IDX_SPP_DATA_RECV_VAL)->attribute_handle,
                                               25, // length of this reply
@@ -294,44 +445,20 @@ static void notify_event_handler(esp_ble_gattc_cb_param_t * p_data)
                                               ESP_GATT_WRITE_TYPE_RSP,
                                               ESP_GATT_AUTH_REQ_NONE);
                 
-                printf("\nMESSAGE TIMER - Received message %lld\n", server_message.s_time_received_message);
-                printf("MESSAGE TIMER - Send response %lld\n", server_message.s_time_send_reply);
-                printf("MESSAGE TIMER - Total response time %lld us\n", server_message.s_time_total_response);
-            }
-            
+            printf("\nMESSAGE TIMER - Received message %lld\n", server_message.s_time_received_message);
+            printf("MESSAGE TIMER - Send response %lld\n", server_message.s_time_send_reply);
+            printf("MESSAGE TIMER - Total response time %lld us\n", server_message.s_time_total_response);
         }
+            
+        
 #endif
     }else if(handle == ((db+SPP_IDX_SPP_STATUS_VAL)->attribute_handle)){
         esp_log_buffer_char(GATTC_TAG, (char *)p_data->notify.value, p_data->notify.value_len);
         //TODO:server notify status characteristic
-    }else{
+    }
+    else{
         esp_log_buffer_char(GATTC_TAG, (char *)p_data->notify.value, p_data->notify.value_len);
     }
-}
-
-
-
-void LED_Control_Task(void *ledPin){ // parameters can be empty
-    int led_state = gpio_get_level(LED_PIN);
-    /*esp_timer_dump(stdout);
-    int64_t currentTime = esp_timer_get_time();
-    ESP_LOGE(TIMER_TAG, "%lld",currentTime); // returns time in microseconds since the start of the board (active timer)
-    char currentTimeCharArray[12];
-    itoa(currentTime, currentTimeCharArray, 10); // integer to array - this is just a test for sending the timer*/
-    // ESP_LOGE(TIMER_TAG, "%.10s",currentTimeCharArray);
-    // ESP_LOGE(TIMER_TAG, "%lld",esp_timer_get_time()); // returns time in microseconds since the start of the board (active timer)
-    //ESP_LOGI(LED_TAG, "Task is here");
-        if (led_state == 0) {
-                gpio_set_level(LED_PIN, 1);
-                //ESP_LOGI(TIME_TAG, "TIME After LED turn on - %lu", (unsigned long) (esp_timer_get_time() / 1000ULL));
-                ESP_LOGI(LED_TAG, "Turn the LED on");
-            
-        }
-        else {
-                gpio_set_level(LED_PIN, 0);
-                ESP_LOGI(LED_TAG, "Turn the LED off");
-        }
-    //vTaskDelete(NULL);
 }
 
 
@@ -514,10 +641,10 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
         else {
             server_message.s_time_received_message = esp_timer_get_time();
         }
-        notify_event_handler(p_data);
         if (!client_initiated_message) {
-            LED_Control_Task(LED_PIN);
+            LED_control_task(LED_PIN);
         }
+        notify_event_handler(p_data);
         client_initiated_message = false;
         break;
     case ESP_GATTC_READ_CHAR_EVT:
@@ -660,119 +787,6 @@ void ble_client_appRegister(void)
 }
 
 
-
-void uart_task(void *pvParameters)
-{
-    uart_event_t event;
-    for (;;) {
-        //Waiting for UART event.
-        if (xQueueReceive(spp_uart_queue, (void * )&event, (TickType_t)portMAX_DELAY)) {
-            client_message.c_time_send_signal = esp_timer_get_time(); // UART singal received
-            client_initiated_message = true; // info that the message came from the client
-            switch (event.type) {
-            //Event of UART receving data
-            case UART_DATA:
-                if (event.size && (is_connect == true) && (db != NULL) && ((db+SPP_IDX_SPP_DATA_RECV_VAL)->properties & (ESP_GATT_CHAR_PROP_BIT_WRITE_NR | ESP_GATT_CHAR_PROP_BIT_WRITE))) {
-                    uint8_t * temp = NULL;
-                    temp = (uint8_t *)malloc(sizeof(uint8_t)*event.size);
-                    if(temp == NULL){
-                        ESP_LOGE(GATTC_TAG, "malloc failed,%s L#%d\n", __func__, __LINE__);
-                        break;
-                    }
-                    int64_t currentTime1 = esp_timer_get_time(); // get this time and use it - izmjeri koliko je izmedu tog i ovog write charr
-                    //ESP_LOGE(TIMER_TAG, "Timer 1 %lld",currentTime); // returns time in microseconds since the start of the board (active timer)
-                    LED_Control_Task((void*) LED_PIN);
-                    int64_t currentTime2 = esp_timer_get_time(); // get this time and use it - izmjeri koliko je izmedu tog i ovog write charr
-                    memset(temp, 0x0, event.size);
-                    // void *memset(void *str, int c, size_t n)
-                    // str − This is a pointer to the block of memory to fill.
-                    // c − This is the value to be set. The value is passed as an int, but the function fills the block of memory using the unsigned char conversion of this value.
-                    // n − This is the number of bytes to be set to the value.
-                    
-                    uart_read_bytes(UART_NUM_0,temp,event.size,portMAX_DELAY);
-                    /*
-                    UART read bytes from UART buffer.
-                    uart_num – UART port number, the max port number is (UART_NUM_MAX -1).
-                    buf – pointer to the buffer.
-                    length – data length
-                    ticks_to_wait – sTimeout, count in RTOS ticks
-
-                    Returns
-                    (-1) Error
-                    OTHERS (>=0) The number of bytes read from UART buffer
-                    */
-
-                    // MY CODE
-                    int64_t currentTime = esp_timer_get_time(); // get this time and use it - izmjeri koliko je izmedu tog i ovog write charr
-
-                    /*char currentTimeCharArray[12];
-                    itoa(currentTime, currentTimeCharArray, 10);
-                    char *stra = "TestRun.";
-                    // char == uint8_t
-                    //uint8_t * temp_my = NULL;
-                    char *temp_my = NULL;
-                    temp_my = (char *)malloc(12);
-
-                    uint8_t sizeOfMy = 12*sizeof(char);
-                    //memset(temp_my, 0x0, sizeOfMy);
-                    //strcpy(temp_my, stra);
-                    strcpy(temp_my, currentTimeCharArray);*/
-                    char *temp_my = timerValueToCharArray(currentTime); // maybe output thsi value to a struct - see if you can reuse one
-                    currentTime = esp_timer_get_time();
-                    //int64_t val = charArrayToTimerValue(temp_my);
-                    currentTime = esp_timer_get_time(); // get this time and use it - izmjeri koliko je izmedu tog i ovog write charr
-                    //client_message_1.c_time_sent = currentTime;
-
-                    
-
-
-                    //uint8_t sizeOfMy = 8*sizeof(char);
-                    //
-                    /*esp_ble_gattc_write_char( spp_gattc_if,
-                                              spp_conn_id,
-                                              (db+SPP_IDX_SPP_DATA_RECV_VAL)->attribute_handle,
-                                              event.size,
-                                              temp,
-                                              ESP_GATT_WRITE_TYPE_RSP,
-                                              ESP_GATT_AUTH_REQ_NONE);*/
-                    client_message.c_time_send_message = esp_timer_get_time();
-                    esp_ble_gattc_write_char( spp_gattc_if,
-                                              spp_conn_id,
-                                              (db+SPP_IDX_SPP_DATA_RECV_VAL)->attribute_handle,
-                                              12*sizeof(char), // size of char array temp my
-                                              (uint8_t*) temp_my,
-                                              //ESP_GATT_WRITE_TYPE_NO_RSP, // this should shorten the time
-                                              ESP_GATT_WRITE_TYPE_RSP,
-                                              ESP_GATT_AUTH_REQ_NONE);
-
-                    
-                    /*
-                    Parameters
-                    gattc_if – [in] Gatt client access interface.
-                    conn_id – [in] : connection ID.
-                    handle – [in] : characteristic handle to write.
-                    value_len – [in] length of the value to be written.
-                    value – [in] : the value to be written.
-                    write_type – [in] : the type of attribute write operation.
-                    auth_req – [in] : authentication request.
-                Returns
-                    ESP_OK: success
-                    other: failed
-                    */
-                    free(temp);
-                    free(temp_my);
-                    //free(currentTimeCharArray);
-                }
-                break;
-            default:
-                break;
-            }
-        }
-    }
-    vTaskDelete(NULL);
-}
-
-
 static void spp_uart_init(void)
 {
     uart_config_t uart_config = {
@@ -795,40 +809,10 @@ static void spp_uart_init(void)
     //xTaskCreate(LED_Control_Task, "ledTask", 2048, (void*)LED_PIN, 1, NULL);
 }
 
-void timer_callback(void *param){} // TIMER TODO
-
-
-void led_setup() {
-    esp_rom_gpio_pad_select_gpio(LED_PIN);
-    gpio_set_direction(LED_PIN, GPIO_MODE_INPUT_OUTPUT); // has to be INPUT_OUTPUT to be able to read it
-    gpio_set_level(LED_PIN, 0);
-    //ESP_LOGI(LED_TAG, "Turn the LED on");
-}
-
-void client_message_setup() {
-    client_basic_message.client_message = NULL;
-    client_basic_message.client_message_length = 6;
-    client_basic_message.client_message = (char *)malloc(sizeof(char) * client_basic_message.client_message_length);
-    char *str = "c_reply";
-    memset(client_basic_message.client_message, 0x0, client_basic_message.client_message_length);
-    strcpy(client_basic_message.client_message, str);
-}
-
-
-
-void timer_setup() {
-    // enable CONFIG_ESP_TIMER_PROFILING in sdkconfig for more details on timers
-    const esp_timer_create_args_t my_timer_args = {
-      .callback = &timer_callback,
-      .name = "Timer client"};
-  esp_timer_handle_t timer_handler;
-  ESP_ERROR_CHECK(esp_timer_create(&my_timer_args, &timer_handler));
-  ESP_ERROR_CHECK(esp_timer_start_periodic(timer_handler, 50)); 
-  // could also use esp_timer_start_once
-  // play with this - try to get better precision
- //       timer – timer handle created using esp_timer_create
- //        period – timer period, in microseconds
-
+void peripheral_setup(){
+    led_setup();
+    timer_setup();
+    client_message_setup();
 }
 
 void app_main(void)
@@ -867,7 +851,6 @@ void app_main(void)
     ble_client_appRegister();
     //ESP_LOGE
     spp_uart_init();
-    led_setup();
-    timer_setup();
-    client_message_setup();
+    peripheral_setup();
+
 }
