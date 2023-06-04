@@ -91,6 +91,7 @@ struct client_basic_message {
 
 bool client_initiated_message = false;
 esp_timer_handle_t timer_handler;
+int64_t last_client_timer_local_time = 0;
 
 ///////////////////////////////////////////
 ////////// FUNKCIJE POSTAVLJANJA //////////
@@ -210,6 +211,8 @@ static esp_bt_uuid_t spp_service_uuid = {
 
 void timer_callback(void *param) {
     LED_control_task((void *)LED_PIN);
+    last_client_timer_local_time = esp_timer_get_time();
+    printf("\nLast local time %lld\n", last_client_timer_local_time);
 }
 
 // [ENG] start the local timer
@@ -222,7 +225,7 @@ void timer_start() {
     }
     else {
         printf("\nTimer is being activated - period time = %llu ms", timePeriod/1000);
-        LED_control_task((void *)LED_PIN);  
+        //LED_control_task((void *)LED_PIN);  
         ESP_ERROR_CHECK(esp_timer_start_periodic(timer_handler, timePeriod)); // period time in microseconds
     }
 }
@@ -271,11 +274,13 @@ int64_t calculate_client_response_time(){
 // [HRV] pripreme za slanje tekst koji sadrži lokalno vrijeme brojača i vrijeme odgovora prema serveru
 char *timer_and_response_message_reply() {
     char *temp_my = NULL;
-    temp_my = (char *)malloc(26);
-    strcpy(temp_my, timer_value_to_char_array(server_message.s_time_total_response, false));
+    temp_my = (char *)malloc(38);
+    //strcpy(temp_my, timer_value_to_char_array(server_message.s_time_total_response, false));
+    strcpy(temp_my, timer_value_to_char_array(esp_timer_get_time() - server_message.s_time_received_message, false));
     strcat(temp_my, "|");
     strcat(temp_my, timer_value_to_char_array(esp_timer_get_time(), false)); // get current time - for now add nothing
     strcat(temp_my, "|");
+    strcat(temp_my, timer_value_to_char_array(last_client_timer_local_time,false));
     return temp_my;
 }
 
@@ -422,29 +427,37 @@ static void notify_event_handler(esp_ble_gattc_cb_param_t * p_data)
             }
 
         } // ovo mozemo koristiti za to kad je timer servera iza timera klijenta
-        else if(p_data->notify.value[0] == 'm') { // ovo radi bez beda this actually works
-            
-        } else if(p_data->notify.value[0] == 'p') {
+        else if(p_data->notify.value[0] == 'c') { // restarting timer becase the sync was not in line
             timer_stop();
             timer_start();
+        } else if(p_data->notify.value[0] == 't') {
+            // TODO: redo this part with more checks
+            //timer_stop();
+            //LED_control_task(LED_PIN);
+            timer_start();
+            // TODO: Ispisuj vrijeme timera svaki put kad se okinu (local time)
+        } else if(p_data->notify.value[0] == 'b') {
+            // TODO: redo this part with more checks
+            timer_stop();
+            timer_start();
+            // TODO: Ispisuj vrijeme timera svaki put kad se okinu (local time)
         }
         
         uart_write_bytes(UART_NUM_0, (char *)(p_data->notify.value), p_data->notify.value_len);
         if (client_initiated_message == false) {
             server_message.s_time_send_reply = esp_timer_get_time();
             calculate_client_response_time();
-                
+
             esp_ble_gattc_write_char( spp_gattc_if,
                                               spp_conn_id,
                                               (db+SPP_IDX_SPP_DATA_RECV_VAL)->attribute_handle,
-                                              25, // length of this reply
+                                              37, // length of this reply
                                               (uint8_t*) timer_and_response_message_reply(),
                                               //client_basic_message.client_message_length,
                                               //(uint8_t*) client_basic_message.client_message,
                                               //ESP_GATT_WRITE_TYPE_NO_RSP, // this should shorten the time
                                               ESP_GATT_WRITE_TYPE_RSP,
                                               ESP_GATT_AUTH_REQ_NONE);
-                
             printf("\nMESSAGE TIMER - Received message %lld\n", server_message.s_time_received_message);
             printf("MESSAGE TIMER - Send response %lld\n", server_message.s_time_send_reply);
             printf("MESSAGE TIMER - Total response time %lld us\n", server_message.s_time_total_response);
@@ -641,7 +654,7 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
         else {
             server_message.s_time_received_message = esp_timer_get_time();
         }
-        if (!client_initiated_message) {
+        if (!client_initiated_message && !(p_data->notify.value[0] == 'l')) { // we use this only when the message comes from a server and it's not a "sync info" message
             LED_control_task(LED_PIN);
         }
         notify_event_handler(p_data);
