@@ -477,7 +477,8 @@ void timer_resync() {
     // if ((last_server_timer_local_time - last_client_timer_local_time) != initial_client_server_clock_difference) { // this is used if we calculate the exact value
     // if the difference from the current sync time and the original sync time is more than 0.5%, we restart the timers
     //if (abs(initial_client_server_clock_difference) != abs(last_server_timer_local_time - last_client_timer_local_time) ) { // used for checking the functionalities
-    if (abs(abs(initial_client_server_clock_difference) - abs(last_server_timer_local_time - last_client_timer_local_time)) > abs(initial_client_server_clock_difference)*0.005 ) { 
+    //if (abs(abs(initial_client_server_clock_difference) - abs(last_server_timer_local_time - last_client_timer_local_time)) > abs(initial_client_server_clock_difference)*0.005 ) { 
+    if (abs(abs(initial_client_server_clock_difference) - abs(last_server_timer_local_time - last_client_timer_local_time)) > 200 ) { // 200 us
         // TODO: we can improve this by adding a delay of client receive time + client activate timer
         server_initiated_message = true;
         server_message.s_time_send_message = esp_timer_get_time(); // sets the time of the sent message
