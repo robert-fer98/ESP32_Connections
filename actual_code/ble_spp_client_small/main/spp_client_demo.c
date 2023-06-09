@@ -86,6 +86,11 @@ struct client_basic_message {
     uint8_t client_message_length;
 } client_basic_message;
 
+// struktura u kojoj se nalaze znakovi za usporedbu unosa znakova s tipkovnice
+struct keyboard_button_handles {
+    uint8_t *uart_compare_o;
+} keyboard_buttons;
+
 ///////////////////////////////////////////
 ///////////////////////////////////////////
 
@@ -120,6 +125,12 @@ void timer_setup() {
         .callback = &timer_callback,
         .name = "Timer client"};
     ESP_ERROR_CHECK(esp_timer_create(&my_timer_args, &timer_handler));
+}
+
+void keyboard_button_handles_setup(){
+    keyboard_buttons.uart_compare_o = (uint8_t *)malloc(sizeof(uint8_t) * 1);
+    memset(keyboard_buttons.uart_compare_o, 'o', 1);
+
 }
 
 ///////////////////////////////////////////
@@ -198,6 +209,7 @@ static esp_gattc_db_elem_t *db = NULL;
 static esp_ble_gap_cb_param_t scan_rst;
 static QueueHandle_t cmd_reg_queue = NULL;
 QueueHandle_t spp_uart_queue = NULL;
+bool console_logging = true;
 
 static esp_bt_uuid_t spp_service_uuid = {
     .len  = ESP_UUID_LEN_16,
@@ -212,7 +224,7 @@ static esp_bt_uuid_t spp_service_uuid = {
 void timer_callback(void *param) {
     LED_control_task((void *)LED_PIN);
     last_client_timer_local_time = esp_timer_get_time();
-    printf("\nLast local time %lld\n", last_client_timer_local_time);
+    ESP_LOGE(TIMER_TAG, "\nLast local time %lld\n", last_client_timer_local_time);
 }
 
 // [ENG] start the local timer
@@ -221,10 +233,10 @@ void timer_start() {
     // enable CONFIG_ESP_TIMER_PROFILING in sdkconfig for more details on timers
     uint64_t timePeriod = 10000000; // in microseconds;
     if (esp_timer_is_active(timer_handler)) {
-        printf("\nUntil next timer event = %lld ms\n", (esp_timer_get_next_alarm() - esp_timer_get_time())/1000);
+        ESP_LOGE(TIMER_TAG, "\nUntil next timer event = %lld ms\n", (esp_timer_get_next_alarm() - esp_timer_get_time())/1000);
     }
     else {
-        printf("\nTimer is being activated - period time = %llu ms", timePeriod/1000);
+        ESP_LOGE(TIMER_TAG, "\nTimer is being activated - period time = %llu ms", timePeriod/1000);
         //LED_control_task((void *)LED_PIN);  
         ESP_ERROR_CHECK(esp_timer_start_periodic(timer_handler, timePeriod)); // period time in microseconds
     }
@@ -275,8 +287,8 @@ int64_t calculate_client_response_time(){
 char *timer_and_response_message_reply() {
     char *temp_my = NULL;
     temp_my = (char *)malloc(38);
-    //strcpy(temp_my, timer_value_to_char_array(server_message.s_time_total_response, false));
-    strcpy(temp_my, timer_value_to_char_array(esp_timer_get_time() - server_message.s_time_received_message, false));
+    server_message.s_time_send_reply = esp_timer_get_time();
+    strcpy(temp_my, timer_value_to_char_array(calculate_client_response_time(), false));
     strcat(temp_my, "|");
     strcat(temp_my, timer_value_to_char_array(esp_timer_get_time(), false)); // get current time - for now add nothing
     strcat(temp_my, "|");
@@ -315,7 +327,6 @@ void uart_task(void *pvParameters)
         //Waiting for UART event.
         if (xQueueReceive(spp_uart_queue, (void * )&event, (TickType_t)portMAX_DELAY)) {
             client_message.c_time_send_signal = esp_timer_get_time(); // UART singal received
-            client_initiated_message = true; // info that the message came from the client
             switch (event.type) {
             //Event of UART receving data
             case UART_DATA:
@@ -326,14 +337,21 @@ void uart_task(void *pvParameters)
                         ESP_LOGE(GATTC_TAG, "malloc failed,%s L#%d\n", __func__, __LINE__);
                         break;
                     }
-                    LED_control_task((void*) LED_PIN);
+                    
                     memset(temp, 0x0, event.size);
                     uart_read_bytes(UART_NUM_0,temp,event.size,portMAX_DELAY);
 
-                    int64_t currentTime = esp_timer_get_time(); // get this time and use it - izmjeri koliko je izmedu tog i ovog write charr
-                    char *temp_my = timer_value_to_char_array(currentTime, false);
-                    client_message.c_time_send_message = esp_timer_get_time();
-                    esp_ble_gattc_write_char( spp_gattc_if,
+                    if (memcmp(temp, keyboard_buttons.uart_compare_o, 1) == 0) { // paljenje/gašenje LOGGING funkcija za vrijeme odgovora poruke - ubrzava odgovor
+                        console_logging = !console_logging;
+                    }
+
+                    else {
+                        LED_control_task((void*) LED_PIN);
+                        client_initiated_message = true; // info that the message came from the client
+                        int64_t currentTime = esp_timer_get_time(); // get this time and use it - izmjeri koliko je izmedu tog i ovog write charr
+                        char *temp_my = timer_value_to_char_array(currentTime, false);
+                        client_message.c_time_send_message = esp_timer_get_time();
+                        esp_ble_gattc_write_char( spp_gattc_if,
                                               spp_conn_id,
                                               (db+SPP_IDX_SPP_DATA_RECV_VAL)->attribute_handle,
                                               12*sizeof(char), // size of char array temp my
@@ -342,8 +360,10 @@ void uart_task(void *pvParameters)
                                               ESP_GATT_WRITE_TYPE_RSP,
                                               ESP_GATT_AUTH_REQ_NONE);
 
-                    free(temp);
                     free(temp_my);
+                    }
+                    free(temp);
+
                 }
                 break;
             default:
@@ -365,16 +385,18 @@ static void notify_event_handler(esp_ble_gattc_cb_param_t * p_data)
 {
     uint8_t handle = 0;
     if (client_initiated_message == true) {
-            printf("MESSAGE TIMER - Send signal received %lld\n", client_message.c_time_send_signal);
-            printf("MESSAGE TIMER - Send message %lld\n", client_message.c_time_send_message);
-            printf("MESSAGE TIMER - Received response %lld\n", client_message.c_time_received_response);
-            printf("MESSAGE TIMER - Total message travel time %lld us\n", client_message.c_time_last_message_travel_time);
+            ESP_LOGE(TIMER_TAG, "MESSAGE TIMER - Send signal received %lld\n", client_message.c_time_send_signal);
+            ESP_LOGE(TIMER_TAG, "MESSAGE TIMER - Send message %lld\n", client_message.c_time_send_message);
+            ESP_LOGE(TIMER_TAG, "MESSAGE TIMER - Received response %lld\n", client_message.c_time_received_response);
+            ESP_LOGE(TIMER_TAG, "MESSAGE TIMER - Total message travel time %lld us\n", client_message.c_time_last_message_travel_time);
          }
 
-    if(p_data->notify.is_notify == true){
-        ESP_LOGI(GATTC_TAG,"+NOTIFY:handle = %d,length = %d ", p_data->notify.handle, p_data->notify.value_len);
-    }else{
-        ESP_LOGI(GATTC_TAG,"+INDICATE:handle = %d,length = %d ", p_data->notify.handle, p_data->notify.value_len);
+    if (console_logging) { // ovaj dio koda usporava odgovor - može se isključiti postavljanjem varijable logging na 'false' - pritisak tipke O na tipkovnici
+        if(p_data->notify.is_notify == true){
+            ESP_LOGI(GATTC_TAG,"+NOTIFY:handle = %d,length = %d ", p_data->notify.handle, p_data->notify.value_len);
+        }else{
+            ESP_LOGI(GATTC_TAG,"+INDICATE:handle = %d,length = %d ", p_data->notify.handle, p_data->notify.value_len);
+        }
     }
     handle = p_data->notify.handle;
     if(db == NULL) {
@@ -431,16 +453,9 @@ static void notify_event_handler(esp_ble_gattc_cb_param_t * p_data)
             timer_stop();
             timer_start();
         } else if(p_data->notify.value[0] == 't') {
-            // TODO: redo this part with more checks
             //timer_stop();
             //LED_control_task(LED_PIN);
             timer_start();
-            // TODO: Ispisuj vrijeme timera svaki put kad se okinu (local time)
-        } else if(p_data->notify.value[0] == 'b') {
-            // TODO: redo this part with more checks
-            timer_stop();
-            timer_start();
-            // TODO: Ispisuj vrijeme timera svaki put kad se okinu (local time)
         }
         
         uart_write_bytes(UART_NUM_0, (char *)(p_data->notify.value), p_data->notify.value_len);
@@ -455,19 +470,18 @@ static void notify_event_handler(esp_ble_gattc_cb_param_t * p_data)
                                               (uint8_t*) timer_and_response_message_reply(),
                                               //client_basic_message.client_message_length,
                                               //(uint8_t*) client_basic_message.client_message,
-                                              //ESP_GATT_WRITE_TYPE_NO_RSP, // this should shorten the time
-                                              ESP_GATT_WRITE_TYPE_RSP,
+                                              ESP_GATT_WRITE_TYPE_NO_RSP, // this should shorten the time
+                                              //ESP_GATT_WRITE_TYPE_RSP,
                                               ESP_GATT_AUTH_REQ_NONE);
-            printf("\nMESSAGE TIMER - Received message %lld\n", server_message.s_time_received_message);
-            printf("MESSAGE TIMER - Send response %lld\n", server_message.s_time_send_reply);
-            printf("MESSAGE TIMER - Total response time %lld us\n", server_message.s_time_total_response);
+            ESP_LOGE(TIMER_TAG,"MESSAGE TIMER - Received message %lld\n", server_message.s_time_received_message);
+            ESP_LOGE(TIMER_TAG,"MESSAGE TIMER - Send response %lld\n", server_message.s_time_send_reply);
+            ESP_LOGE(TIMER_TAG, "MESSAGE TIMER - Total response time %lld us\n", server_message.s_time_total_response);
         }
             
         
 #endif
     }else if(handle == ((db+SPP_IDX_SPP_STATUS_VAL)->attribute_handle)){
         esp_log_buffer_char(GATTC_TAG, (char *)p_data->notify.value, p_data->notify.value_len);
-        //TODO:server notify status characteristic
     }
     else{
         esp_log_buffer_char(GATTC_TAG, (char *)p_data->notify.value, p_data->notify.value_len);
@@ -568,7 +582,9 @@ static void esp_gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *par
 
 static void esp_gattc_cb(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if, esp_ble_gattc_cb_param_t *param)
 {
-    ESP_LOGI(GATTC_TAG, "EVT %d, gattc if %d", event, gattc_if);
+    if (console_logging) {
+        ESP_LOGI(GATTC_TAG, "EVT %d, gattc if %d", event, gattc_if);
+    }
 
     /* If event is register event, store the gattc_if for each profile */
     if (event == ESP_GATTC_REG_EVT) {
@@ -640,13 +656,16 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
                 (db+cmd+1)->attribute_handle,
                 sizeof(notify_en),
                 (uint8_t *)&notify_en,
-                ESP_GATT_WRITE_TYPE_RSP,
+                ESP_GATT_WRITE_TYPE_NO_RSP,
+                //ESP_GATT_WRITE_TYPE_RSP,
                 ESP_GATT_AUTH_REQ_NONE);
 
         break;
     }
     case ESP_GATTC_NOTIFY_EVT:
-        ESP_LOGI(GATTC_TAG,"ESP_GATTC_NOTIFY_EVT\n");
+        if (console_logging) {
+            ESP_LOGI(GATTC_TAG,"ESP_GATTC_NOTIFY_EVT\n");
+        }   
         if (client_initiated_message == true) {
             client_message.c_time_received_response = esp_timer_get_time(); // getting time when the event came
             client_message.c_time_last_message_travel_time = client_message.c_time_received_response - client_message.c_time_send_message;
@@ -664,10 +683,12 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
         ESP_LOGI(GATTC_TAG,"ESP_GATTC_READ_CHAR_EVT\n");
         break;
     case ESP_GATTC_WRITE_CHAR_EVT:
-        ESP_LOGI(GATTC_TAG,"ESP_GATTC_WRITE_CHAR_EVT:status = %d,handle = %d", param->write.status, param->write.handle);
-        if(param->write.status != ESP_GATT_OK){
-            ESP_LOGE(GATTC_TAG, "ESP_GATTC_WRITE_CHAR_EVT, error status = %d", p_data->write.status);
-            break;
+        if (console_logging) {
+            ESP_LOGI(GATTC_TAG,"ESP_GATTC_WRITE_CHAR_EVT:status = %d,handle = %d", param->write.status, param->write.handle);
+            if(param->write.status != ESP_GATT_OK){
+                ESP_LOGE(GATTC_TAG, "ESP_GATTC_WRITE_CHAR_EVT, error status = %d", p_data->write.status);
+                break;
+            }
         }
         
         //LED_Control_Task((void*) LED_PIN);
@@ -826,6 +847,7 @@ void peripheral_setup(){
     led_setup();
     timer_setup();
     client_message_setup();
+    keyboard_button_handles_setup();
 }
 
 void app_main(void)

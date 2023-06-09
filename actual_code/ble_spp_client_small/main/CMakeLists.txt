@@ -1,2 +1,2 @@
-idf_component_register(SRCS "spp_client_demo.c"
+idf_component_register(SRCS
                     INCLUDE_DIRS ".")
