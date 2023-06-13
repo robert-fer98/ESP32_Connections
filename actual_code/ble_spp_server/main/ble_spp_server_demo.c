@@ -35,7 +35,7 @@
 #define INPUT_PIN 32
 #define LED_PIN 33
 
-static const char *LED_TAG = "LED";
+//static const char *LED_TAG = "LED";
 static const char *TIMER_TAG = "TIMER";
 
 #define GATTS_TABLE_TAG "BLE_SERVER"
@@ -91,7 +91,8 @@ static QueueHandle_t cmd_cmd_queue = NULL;
 esp_timer_handle_t timer_handler;
 esp_timer_handle_t timer_resync_handler;
 int64_t last_server_timer_local_time;
-int64_t last_client_timer_local_time;
+int64_t last_server_LED_local_time = 0;
+int64_t last_client_timer_local_time = 0;
 int64_t initial_client_server_clock_difference;
 // varijable za čuvanje rezultata razlike sata klijenta i servera
 int64_t server_client_clock_difference = 0;
@@ -99,7 +100,9 @@ bool console_logging = true;
 bool timer_resync_enable = false;
 bool timer_resync_allow = true;
 int64_t timer_period = 10000000;
-int64_t timer_resync_period = 60000; // in ms
+int64_t timer_resync_period = 12000; // in ms
+bool static_delay_value = false;
+int delay_value;
 
 TaskHandle_t syncTask = NULL;
 TaskHandle_t resyncTask = NULL;
@@ -470,7 +473,7 @@ void timer_start(bool resync) {
         LED_control_task((void *)LED_PIN);  
         ESP_ERROR_CHECK(esp_timer_start_periodic(timer_handler, timer_period)); // period time in microseconds
         if (resync) {
-        timer_resync_start();
+            timer_resync_start();
         }
     }
 }
@@ -480,6 +483,7 @@ void timer_start(bool resync) {
 void timer_stop(bool resync) {
     if (esp_timer_is_active(timer_handler)) {
         esp_timer_stop(timer_handler);
+        static_delay_value = false;
         if (resync) {
             vTaskDelete(resyncTask);
             timer_resync_enable = false;
@@ -501,6 +505,7 @@ void timer_stop(bool resync) {
 void LED_control_task(void *ledPin)
 { // parameters can be empty
     int led_state = gpio_get_level(LED_PIN);
+    last_server_LED_local_time = esp_timer_get_time();
     if (led_state == 0)
     {
         gpio_set_level(LED_PIN, 1);
@@ -538,11 +543,13 @@ void timer_resync_task(void *params) {
             // TODO: we can improve this by adding a delay of client receive time + client activate timer
                 server_initiated_message = true;
                 server_message.s_time_send_message = esp_timer_get_time(); // sets the time of the sent message
+                int64_t temp_val = last_server_timer_local_time;
+                last_server_timer_local_time = 0;
                 esp_ble_gatts_send_indicate(spp_gatts_if, spp_conn_id, spp_handle_table[SPP_IDX_SPP_DATA_NTY_VAL], 1, keyboard_buttons.uart_compare_c, false); 
                 vTaskDelay((server_message.s_time_last_message_travel_time/(2*1000)) / portTICK_PERIOD_MS);
                 timer_stop(false);
                 timer_start(false);
-                ESP_LOGE(TIMER_TAG,"\nTime difference = %lld\n", (last_server_timer_local_time - last_client_timer_local_time));
+                ESP_LOGE(TIMER_TAG,"\nTime difference = %lld\n", (temp_val - last_client_timer_local_time));
                 //printf("\nReal time difference = %lld\n", (server_client_clock_difference));
                 ESP_LOGE(TIMER_TAG,"\nInitial time difference = %lld\n", (initial_client_server_clock_difference));
                 ESP_LOGE(TIMER_TAG,"Timers have been restarted\n");
@@ -556,12 +563,7 @@ void timer_resync_task(void *params) {
         
         }
 
-    
-    // if ((last_server_timer_local_time - last_client_timer_local_time) != server_client_clock_difference) { // this is used if we calculate the difference dynamically
-    // if ((last_server_timer_local_time - last_client_timer_local_time) != initial_client_server_clock_difference) { // this is used if we calculate the exact value
-    // if the difference from the current sync time and the original sync time is more than 0.5%, we restart the timers
-    //if (abs(initial_client_server_clock_difference) != abs(last_server_timer_local_time - last_client_timer_local_time) ) { // used for checking the functionalities
-    //if (abs(abs(initial_client_server_clock_difference) - abs(last_server_timer_local_time - last_client_timer_local_time)) > abs(initial_client_server_clock_difference)*0.005 ) { 
+ 
 }
 
 void uart_task(void *pvParameters)
@@ -613,7 +615,7 @@ void uart_task(void *pvParameters)
                         if (memcmp(temp, keyboard_buttons.uart_compare_w, 1) == 0) {
                             server_message.s_time_send_message = esp_timer_get_time(); // sets the time of the sent message
                             esp_ble_gatts_send_indicate(spp_gatts_if, spp_conn_id, spp_handle_table[SPP_IDX_SPP_DATA_NTY_VAL], 12, (uint8_t *)responseArray, false); 
-                            vTaskDelay(40 / portTICK_PERIOD_MS); // fixed value
+                            vTaskDelay(20 / portTICK_PERIOD_MS); // fixed value
                             LED_control_task((void *)LED_PIN); 
                         } 
                         // if 'a' is pressed, the LED control will be delayed by the previous message travel time divided by 2
@@ -641,6 +643,7 @@ void uart_task(void *pvParameters)
                         // na pritisak tipke 't' - pokretanje brojača
                         else if (memcmp(temp, keyboard_buttons.uart_compare_t, 1) == 0) {
                             server_message.s_time_send_message = esp_timer_get_time(); // sets the time of the sent message
+                            initial_client_server_clock_difference = 0;
                             esp_ble_gatts_send_indicate(spp_gatts_if, spp_conn_id, spp_handle_table[SPP_IDX_SPP_DATA_NTY_VAL], event.size, temp, false); 
                             vTaskDelay((server_message.s_time_last_message_travel_time/(2*1000)) / portTICK_PERIOD_MS);
                             timer_start(true);
@@ -653,23 +656,10 @@ void uart_task(void *pvParameters)
                         // na pritisak tipke 'u' - zaustavljanje brojača 
                         else if (memcmp(temp, keyboard_buttons.uart_compare_u, 1) == 0) {
                             //server_message.s_time_send_message = esp_timer_get_time(); // sets the time of the sent message
-                            //esp_ble_gatts_send_indicate(spp_gatts_if, spp_conn_id, spp_handle_table[SPP_IDX_SPP_DATA_NTY_VAL], 12, (uint8_t *)responseArray, false); 
+                            esp_ble_gatts_send_indicate(spp_gatts_if, spp_conn_id, spp_handle_table[SPP_IDX_SPP_DATA_NTY_VAL], 12, (uint8_t *)responseArray, false); 
                             timer_stop(true);
                             ESP_LOGE(TIMER_TAG,"\nSend u - Timer stopped");
                         } 
-                        // LED will be synced by the previous timer difference ('s' button) if it has been calculated
-                        /*else if (memcmp(temp, keyboard_buttons.uart_compare_b, 1) == 0) {
-                            //server_message.s_time_send_message = esp_timer_get_time(); // sets the time of the sent message
-                            esp_ble_gatts_send_indicate(spp_gatts_if, spp_conn_id, spp_handle_table[SPP_IDX_SPP_DATA_NTY_VAL], event.size, temp, false); 
-                            if (server_client_clock_difference > 0) {
-                                vTaskDelay(server_client_clock_difference / (1000*portTICK_PERIOD_MS));
-                                LED_control_task((void *)LED_PIN); 
-                            }
-                            else {
-                                printf("\nServer timer is behind the client one\n");
-                            }
-                            
-                        }  */
                         // periodic sync on both - stop and start
                         else if (memcmp(temp, keyboard_buttons.uart_compare_p, 1) == 0) {
                             //server_message.s_time_send_message = esp_timer_get_time(); // sets the time of the sent message
@@ -697,7 +687,7 @@ void uart_task(void *pvParameters)
                         else {
                             server_message.s_time_send_message = esp_timer_get_time(); // sets the time of the sent message
                             esp_ble_gatts_send_indicate(spp_gatts_if, spp_conn_id, spp_handle_table[SPP_IDX_SPP_DATA_NTY_VAL], event.size, temp, false);
-                             LED_control_task((void *)LED_PIN); 
+                            LED_control_task((void *)LED_PIN); 
                         }
                     
                     }
@@ -1107,7 +1097,7 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
                     char *responseClock = response_extract_clock((char *) p_data->write.value);
                     char *responseLocalTimer = response_extract_last_client_timer_local_time((char *) p_data->write.value);
                     last_client_timer_local_time = char_array_to_timer_value(responseLocalTimer);
-                    if (initial_client_server_clock_difference == 0) {
+                    if (initial_client_server_clock_difference == 0 && last_server_timer_local_time != 0) {
                         initial_client_server_clock_difference = last_server_timer_local_time - last_client_timer_local_time;
                     }
                     ESP_LOGE(TIMER_TAG,"Duration string %s\n", responseDuration);
@@ -1115,13 +1105,25 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
                     timer_resync_allow = true;
                     server_initiated_message = false;
                     
-                    if (timer_resync_enable) {
-                        server_client_clock_difference = calculate_server_client_clock_difference(char_array_to_timer_value(responseClock), char_array_to_timer_value(responseDuration));
-                        ESP_LOGE(TIMER_TAG,"SERVER/CLIENT CLOCK DIFFERENCE = %lld us\n", server_client_clock_difference);
+                    server_client_clock_difference = calculate_server_client_clock_difference(char_array_to_timer_value(responseClock), char_array_to_timer_value(responseDuration));
+                    ESP_LOGE(TIMER_TAG,"SERVER - CLIENT CLOCK DIFFERENCE = %lld us\n", server_client_clock_difference);
+                    
+                    if (!static_delay_value) {
+                        delay_value = (abs(abs(server_client_clock_difference) - abs(last_server_LED_local_time - last_client_timer_local_time)));
+                    }
+
+                    if (timer_resync_enable) {    
                         ESP_LOGE(TIMER_TAG,"Last client local time %lld\n", last_client_timer_local_time);
-                        ESP_LOGE(TIMER_TAG,"Last server local time %lld\n", last_server_timer_local_time);
+                        ESP_LOGE(TIMER_TAG,"Last server local time %lld\n", last_server_LED_local_time);
+                        static_delay_value = true;
                     } 
+                    ESP_LOGE(TIMER_TAG, "Delay between two LEDs %d us\n", delay_value);
+                    
+
+                    
+
                 }
+                
                 // tu znaci mozemo vratiti odmah vrijednost timera i vidjeti koliko "otprilike" treba da se posalje poruka
                 uart_write_bytes(UART_NUM_0, "\n", 1);
 #endif

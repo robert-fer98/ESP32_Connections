@@ -45,7 +45,7 @@
 #define INPUT_PIN 32
 #define LED_PIN 33
 
-static const char *LED_TAG = "LED";
+//static const char *LED_TAG = "LED";
 static const char *TIMER_TAG = "TIMER";
 
 void LED_control_task(void *ledPin);
@@ -97,6 +97,7 @@ struct keyboard_button_handles {
 bool client_initiated_message = false;
 esp_timer_handle_t timer_handler;
 int64_t last_client_timer_local_time = 0;
+int64_t last_client_LED_local_time = 0;
 
 ///////////////////////////////////////////
 ////////// FUNKCIJE POSTAVLJANJA //////////
@@ -210,6 +211,9 @@ static esp_ble_gap_cb_param_t scan_rst;
 static QueueHandle_t cmd_reg_queue = NULL;
 QueueHandle_t spp_uart_queue = NULL;
 bool console_logging = true;
+int64_t temp_value;
+int64_t temp11;
+int64_t temp22;
 
 static esp_bt_uuid_t spp_service_uuid = {
     .len  = ESP_UUID_LEN_16,
@@ -225,6 +229,7 @@ void timer_callback(void *param) {
     LED_control_task((void *)LED_PIN);
     last_client_timer_local_time = esp_timer_get_time();
     ESP_LOGE(TIMER_TAG, "\nLast local time %lld\n", last_client_timer_local_time);
+    ESP_LOGE(TIMER_TAG, "\nLast LED local time %lld\n", last_client_LED_local_time);
 }
 
 // [ENG] start the local timer
@@ -260,19 +265,19 @@ int64_t char_array_to_timer_value(char *arrayValue)
 }
 
 // [ENG] converts timer value (int64_t) to char array
-// time of conversion from timer to this is around 3.3-4ms (3300-4000 us) - we can add this value to the measurement - 3700
 // [HRV] konvertira vrijeme brojača (int64_t) u char array
-// vrijeme konverzije je između 3.3-4ms (3300-4000 us) - tu vrijednost možemo dodati na brojač ako je potrebno (cca. 3700)
 char *timer_value_to_char_array(int64_t currentTime, bool addFunctionTime)
 {
+    temp11 = esp_timer_get_time();
     if (addFunctionTime)
-        currentTime += 3700;
+        currentTime += 400;
     char currentTimeCharArray[12];
     itoa(currentTime, currentTimeCharArray, 10);
     char *temp_my = NULL;
     temp_my = (char *)malloc(12);
     // uint8_t sizeOfMy = 12*sizeof(char);
     strcpy(temp_my, currentTimeCharArray);
+    temp22 = esp_timer_get_time();
     return temp_my;
 }
 
@@ -290,9 +295,10 @@ char *timer_and_response_message_reply() {
     server_message.s_time_send_reply = esp_timer_get_time();
     strcpy(temp_my, timer_value_to_char_array(calculate_client_response_time(), false));
     strcat(temp_my, "|");
-    strcat(temp_my, timer_value_to_char_array(esp_timer_get_time(), false)); // get current time - for now add nothing
+    strcat(temp_my, timer_value_to_char_array(server_message.s_time_send_reply, false)); // get current time - for now add nothing
     strcat(temp_my, "|");
-    strcat(temp_my, timer_value_to_char_array(last_client_timer_local_time,false));
+    strcat(temp_my, timer_value_to_char_array(last_client_LED_local_time,false));
+    temp_value = esp_timer_get_time();
     return temp_my;
 }
 
@@ -317,6 +323,7 @@ void LED_control_task(void *ledPin){ // parameters can be empty
                 gpio_set_level(LED_PIN, 0);
                 //ESP_LOGI(LED_TAG, "Turn the LED off");
         }
+    last_client_LED_local_time = esp_timer_get_time();
     //vTaskDelete(NULL);
 }
 
@@ -452,9 +459,14 @@ static void notify_event_handler(esp_ble_gattc_cb_param_t * p_data)
         else if(p_data->notify.value[0] == 'c') { // restarting timer becase the sync was not in line
             timer_stop();
             timer_start();
-        } else if(p_data->notify.value[0] == 't') {
+        }
+        else if(p_data->notify.value[0] == 'u') { // restarting timer becase the sync was not in line
+            timer_stop();
+        }
+         else if(p_data->notify.value[0] == 't') {
             //timer_stop();
             //LED_control_task(LED_PIN);
+            //last_client_LED_local_time = 0;
             timer_start();
         }
         
@@ -476,6 +488,8 @@ static void notify_event_handler(esp_ble_gattc_cb_param_t * p_data)
             ESP_LOGE(TIMER_TAG,"MESSAGE TIMER - Received message %lld\n", server_message.s_time_received_message);
             ESP_LOGE(TIMER_TAG,"MESSAGE TIMER - Send response %lld\n", server_message.s_time_send_reply);
             ESP_LOGE(TIMER_TAG, "MESSAGE TIMER - Total response time %lld us\n", server_message.s_time_total_response);
+            ESP_LOGE(TIMER_TAG, "MESSAGE TIMER - Response setup function time %lld us\n", temp_value - server_message.s_time_send_reply);
+            ESP_LOGE(TIMER_TAG, "MESSAGE TIMER - Conversion time %lld us\n", temp22 - temp11);
         }
             
         
@@ -666,16 +680,20 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
         if (console_logging) {
             ESP_LOGI(GATTC_TAG,"ESP_GATTC_NOTIFY_EVT\n");
         }   
-        if (client_initiated_message == true) {
+        if (client_initiated_message) {
             client_message.c_time_received_response = esp_timer_get_time(); // getting time when the event came
             client_message.c_time_last_message_travel_time = client_message.c_time_received_response - client_message.c_time_send_message;
         }
         else {
             server_message.s_time_received_message = esp_timer_get_time();
-        }
-        if (!client_initiated_message && !(p_data->notify.value[0] == 'l')) { // we use this only when the message comes from a server and it's not a "sync info" message
-            LED_control_task(LED_PIN);
-        }
+            if ((p_data->notify.value[0] == 'l')) {
+                last_client_LED_local_time = last_client_timer_local_time;
+            }
+            else {
+                LED_control_task(LED_PIN);
+            }
+        } // we use this only when the message comes from a server and it's not a "sync info" message
+
         notify_event_handler(p_data);
         client_initiated_message = false;
         break;
