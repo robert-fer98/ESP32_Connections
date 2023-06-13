@@ -656,7 +656,7 @@ void uart_task(void *pvParameters)
                         // na pritisak tipke 'u' - zaustavljanje brojača 
                         else if (memcmp(temp, keyboard_buttons.uart_compare_u, 1) == 0) {
                             //server_message.s_time_send_message = esp_timer_get_time(); // sets the time of the sent message
-                            esp_ble_gatts_send_indicate(spp_gatts_if, spp_conn_id, spp_handle_table[SPP_IDX_SPP_DATA_NTY_VAL], 12, (uint8_t *)responseArray, false); 
+                            esp_ble_gatts_send_indicate(spp_gatts_if, spp_conn_id, spp_handle_table[SPP_IDX_SPP_DATA_NTY_VAL], event.size, temp, false); 
                             timer_stop(true);
                             ESP_LOGE(TIMER_TAG,"\nSend u - Timer stopped");
                         } 
