@@ -65,7 +65,8 @@ void timer_callback(void *param);
 /////// SYNCHORNIZATION STRUCTURES ////////
 ///////////////////////////////////////////
 
-// struktura u koju se zapisuju podatci o vremenima poruka koje se šalju s klijenta na server
+// [ENG] structure that holds the ata of the message times of the messages that client sends to the server
+// [HRV] struktura u koju se zapisuju podatci o vremenima poruka koje se šalju s klijenta na server
 struct client_send_message {
     int64_t c_time_send_signal;
     int64_t c_time_send_message;
@@ -73,20 +74,23 @@ struct client_send_message {
     int64_t c_time_last_message_travel_time;
 } client_message;
 
-// struktura u koju se zapisuju podatci o vremenima poruka koje se šalju sa servera prema klijentu
+// [ENG] structure that holds the ata of the message times of the messages that server sends to the client
+// [HRV] struktura u koju se zapisuju podatci o vremenima poruka koje se šalju sa servera prema klijentu
 struct server_send_message {
     int64_t s_time_received_message;
     int64_t s_time_send_reply;
     int64_t s_time_total_response;
 } server_message;
 
-// struktura u koju se zapisuje sadržaj i duljina sadržaja poruke koja se šalje od klijenta prema serveru
+// [ENG] structure that holds the content and the message size of the client to server message
+// [HRV] struktura u koju se zapisuje sadržaj i duljina sadržaja poruke koja se šalje s klijenta prema serveru
 struct client_basic_message {
     char * client_message;
     uint8_t client_message_length;
 } client_basic_message;
 
-// struktura u kojoj se nalaze znakovi za usporedbu unosa znakova s tipkovnice
+// [ENG] structure that holds the data for keyboard input comparisons
+// [HRV] struktura u kojoj se nalaze znakovi za usporedbu unosa znakova s tipkovnice
 struct keyboard_button_handles {
     uint8_t *uart_compare_o;
 } keyboard_buttons;
@@ -94,6 +98,8 @@ struct keyboard_button_handles {
 ///////////////////////////////////////////
 ///////////////////////////////////////////
 
+// [ENG] variables used for time synchonization
+// [HRV] varijable korištene za vremensku sinrkonizaciju
 bool client_initiated_message = false;
 esp_timer_handle_t timer_handler;
 int64_t last_client_timer_local_time = 0;
@@ -147,13 +153,6 @@ struct gattc_profile_inst {
     uint16_t char_handle;
     esp_bd_addr_t remote_bda;
 };
-
-/*
-struct sync_info_package { // don't send the whole package because it'll probably take longer
-    int64_t timer_value;
-    char* timer_value_char;
-    uint8_t timer_value_char_length;
-};*/
 
 enum{
     SPP_IDX_SVC,
@@ -225,6 +224,8 @@ static esp_bt_uuid_t spp_service_uuid = {
 /////////// AUXILIARY FUNCTIONS ///////////
 ///////////////////////////////////////////
 
+// [ENG] callback function used for timer task
+// [HRV] funkcija koja se koristi kod isteka brojača
 void timer_callback(void *param) {
     LED_control_task((void *)LED_PIN);
     last_client_timer_local_time = esp_timer_get_time();
@@ -265,7 +266,9 @@ int64_t char_array_to_timer_value(char *arrayValue)
 }
 
 // [ENG] converts timer value (int64_t) to char array
+// time of conversion from timer to this is around 200 us - we can add this value to the measurement
 // [HRV] konvertira vrijeme brojača (int64_t) u char array
+// vrijeme konverzije je između 200 us - tu vrijednost možemo dodati na brojač ako je potrebno
 char *timer_value_to_char_array(int64_t currentTime, bool addFunctionTime)
 {
     temp11 = esp_timer_get_time();
@@ -311,6 +314,8 @@ char *timer_and_response_message_reply() {
 ////////////// TASK FUNCTIONS /////////////
 ///////////////////////////////////////////
 
+// [ENG] function that turns the LED on/off
+// [HRV] funkcija paljenja/gašenja LED-ice
 void LED_control_task(void *ledPin){ // parameters can be empty
     int led_state = gpio_get_level(LED_PIN);
         if (led_state == 0) {
@@ -327,6 +332,9 @@ void LED_control_task(void *ledPin){ // parameters can be empty
     //vTaskDelete(NULL);
 }
 
+
+// [ENG] function of receiving the keyboard input data and doing different actions based on different inputs
+// [HRV] funkcija zadatka primanja i prepoznavanja pristisnutih tipki s tipkovnice te odrađivanja različitih akcija na temelju istih
 void uart_task(void *pvParameters)
 {
     uart_event_t event;
@@ -384,8 +392,9 @@ void uart_task(void *pvParameters)
 ///////////////////////////////////////////
 ///////////////////////////////////////////
 
-
-// kod primanja poruke od servera poziva se ova funkcija
+// [ENG] this function is called when the message is received from the server
+// the response message with the timer values is set up
+// [HRV] kod primanja poruke od servera poziva se ova funkcija
 // ako je server inicirao poruku, zapisat će se vrijeme primanja odgovora na poruku od klijenta 
 // ako je poruku inicirao klijent, zapisat će se vrijeme primanja poruke od klijenta i vrijeme trajanja putovanja poruke
 static void notify_event_handler(esp_ble_gattc_cb_param_t * p_data)
@@ -455,14 +464,20 @@ static void notify_event_handler(esp_ble_gattc_cb_param_t * p_data)
                 return;
             }
 
-        } // ovo mozemo koristiti za to kad je timer servera iza timera klijenta
-        else if(p_data->notify.value[0] == 'c') { // restarting timer becase the sync was not in line
+        } 
+        // [HRV] resyncing the timer
+        // [HRV] resinkrnonizacija brojača
+        else if(p_data->notify.value[0] == 'c') { 
             timer_stop();
             timer_start();
         }
-        else if(p_data->notify.value[0] == 'u') { // restarting timer becase the sync was not in line
+        // [ENG] stopping the timer if 't' is received from the server
+        // [HRV] zaustavljanje brojača ukoliko je 't' primljen od servera
+        else if(p_data->notify.value[0] == 'u') { // stopping timer on signal
             timer_stop();
         }
+        // [ENG] starting the timer if 't' is received from the server
+        // [HRV] pokretanje brojača ukoliko je 't' primljen od servera
          else if(p_data->notify.value[0] == 't') {
             //timer_stop();
             //LED_control_task(LED_PIN);

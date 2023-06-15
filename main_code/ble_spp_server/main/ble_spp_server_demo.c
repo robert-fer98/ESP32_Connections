@@ -58,13 +58,10 @@ void timer_resync_callback(void *param);
 #define SAMPLE_DEVICE_NAME "ESP_SERVER" // The Device Name Characteristics in GAP
 #define SPP_SVC_INST_ID 0
 
-// Dodatne varijable za podešavanje dijelova koda - TODO
-#define BLE_SYNC_NO_ADJUST 1
-// #define BLE_SYNC_STATIC_ADJUST 1
-// #define BLE_SYNC_DYNAMIC_ADJUST 1
-// #define BLE_SYNC_RESYNC_ADJUST 1
-// #define BLE_SYNC_ENABLE_BUTTON 1 // omogućava korištenje tipke spojene na GPIO INPUT_PIN (32)
+// [ENG] enables the use of buttons on GPIO INPUT_PIN (32)
+// [HRV] omogućava korištenje tipke spojene na GPIO INPUT_PIN (32)
 
+// #define BLE_SYNC_ENABLE_BUTTON 1
 
 /// SPP Service
 static const uint16_t spp_service_uuid = 0xABF0;
@@ -87,22 +84,6 @@ static uint16_t spp_conn_id = 0xffff;
 static esp_gatt_if_t spp_gatts_if = 0xff;
 QueueHandle_t spp_uart_queue = NULL;
 static QueueHandle_t cmd_cmd_queue = NULL;
-
-esp_timer_handle_t timer_handler;
-esp_timer_handle_t timer_resync_handler;
-int64_t last_server_timer_local_time;
-int64_t last_server_LED_local_time = 0;
-int64_t last_client_timer_local_time = 0;
-int64_t initial_client_server_clock_difference;
-// varijable za čuvanje rezultata razlike sata klijenta i servera
-int64_t server_client_clock_difference = 0;
-bool console_logging = true;
-bool timer_resync_enable = false;
-bool timer_resync_allow = true;
-int64_t timer_period = 10000000;
-int64_t timer_resync_period = 12000; // in ms
-bool static_delay_value = false;
-int delay_value;
 
 TaskHandle_t syncTask = NULL;
 TaskHandle_t resyncTask = NULL;
@@ -167,7 +148,8 @@ static spp_receive_data_buff_t SppRecvDataBuff = {
 /////// SYNCHORNIZATION STRUCTURES ////////
 ///////////////////////////////////////////
 
-// struktura u koju se zapisiju duljine trajanja funkcija ispisa i kontrole LED-ica
+// [ENG] strucure that hold the length times of important functions
+// [HRV] struktura u koju se zapisiju duljine trajanja funkcija ispisa i kontrole LED-ica
 struct function_durations {
     int64_t printf_duration;
     int64_t uart_duration;
@@ -176,7 +158,8 @@ struct function_durations {
     int64_t led_control_duration;
 } out_function_durations;
 
-// struktura u koju se zapisuju podatci o vremenima poruka koje se šalju sa servera prema klijentu
+// [ENG] structure that holds the ata of the message times of the messages that server sends to the client
+// [HRV] struktura u koju se zapisuju podatci o vremenima poruka koje se šalju sa servera prema klijentu
 struct server_send_message {
     int64_t s_time_send_signal;
     int64_t s_time_send_message;
@@ -184,20 +167,23 @@ struct server_send_message {
     int64_t s_time_last_message_travel_time;
 } server_message;
 
-// struktura u koju se zapisuju podatci o vremenima poruka koje se šalju s klijenta na server
+// [ENG] structure that holds the ata of the message times of the messages that client sends to the server
+// [HRV] struktura u koju se zapisuju podatci o vremenima poruka koje se šalju s klijenta na server
 struct client_send_message {
     int64_t c_time_received_message;
     int64_t c_time_send_reply;
     int64_t c_time_total_response;
 } client_message;
 
-// struktura u koju se zapisuje sadržaj i duljina sadržaja poruke koja se šalje sa servera prema klijentu
+// [ENG] structure that holds the content and the message size of the server to client message
+// [HRV] struktura u koju se zapisuje sadržaj i duljina sadržaja poruke koja se šalje sa servera prema klijentu
 struct server_basic_message {
     char * server_message;
     uint8_t server_message_length;
 } server_basic_message;
 
-// struktura u kojoj se nalaze znakovi za usporedbu unosa znakova s tipkovnice
+// [ENG] structure that holds the data for keyboard input comparisons
+// [HRV] struktura u kojoj se nalaze znakovi za usporedbu unosa znakova s tipkovnice
 struct keyboard_button_handles {
     uint8_t *uart_compare_w;
     uint8_t *uart_compare_a;
@@ -220,10 +206,33 @@ struct keyboard_button_handles {
 //////// SYNCHRONIZATION VARIABLES ////////
 ///////////////////////////////////////////
 
-// varijabla koja označava da je server prvi poslao poruku prema klijentu
+
+// [ENG] variables used for time synchonization
+// [HRV] varijable korištene za vremensku sinrkonizaciju
+esp_timer_handle_t timer_handler;
+esp_timer_handle_t timer_resync_handler;
+int64_t last_server_timer_local_time;
+int64_t last_server_LED_local_time = 0;
+int64_t last_client_timer_local_time = 0;
+int64_t initial_client_server_clock_difference;
+int64_t server_client_clock_difference = 0;
+bool timer_resync_enable = false;
+bool timer_resync_allow = true;
+int64_t timer_period = 10000000;
+int64_t timer_resync_period = 12000; // in ms
+
+// [ENG] variables used for data logging in console
+// [HRV] varijable korištene za ispisivanje podataka u konzolu
+bool console_logging = true;
+bool static_delay_value = false;
+int delay_value;
+
+// [ENG] variable that marks the message has been sent by the server
+// [HRV] varijabla koja označava da je server prvi poslao poruku prema klijentu
 bool server_initiated_message = false;
 
-// varijable za korištenje gumbiju kao prekidne rutine
+// [ENG] variables that are used for button events
+// [HRV] varijable za korištenje gumbiju kao prekidne rutine
 button_event_t ev;
 QueueHandle_t button_events;
 
@@ -350,6 +359,8 @@ char *response_extract_duration(char* response) {
     return strtok(response, "|");
 }
 
+// [ENG] extracts sub char array of client's local time when the LED was last turned on
+// [HRV] vadi dio odgovora klijenta koji sadržava informacije o posljednjem vremenu paljenja LED-ice na klijentu
 char *response_extract_last_client_timer_local_time(char* response) {
     strtok_r(response, "|", &response);
     strtok_r(response, "|", &response);
@@ -361,13 +372,6 @@ char *response_extract_last_client_timer_local_time(char* response) {
 int64_t calculate_server_client_clock_difference(int64_t clientClock, int64_t clientDuration){
     int64_t tripTime = (server_message.s_time_last_message_travel_time - clientDuration);
     return server_message.s_time_received_response - (tripTime/2 + clientClock);
-}
-
-// [ENG] 
-// [HRV] NO KORISTI SE
-int64_t calculate_server_response_time(int64_t incomingTimer, int64_t serverStart)
-{    
-    return incomingTimer + (esp_timer_get_time() - serverStart);
 }
 
 // [ENG] calculate execution time of the printf() function
@@ -421,13 +425,13 @@ int64_t calculate_led_control_duration(){
 }
 
 // [ENG] converts timer value (int64_t) to char array
-// time of conversion from timer to this is around 3.3-4ms (3300-4000 us) - we can add this value to the measurement - 3700
+// time of conversion from timer to this is around 200 us - we can add this value to the measurement
 // [HRV] konvertira vrijeme brojača (int64_t) u char array
-// vrijeme konverzije je između 3.3-4ms (3300-4000 us) - tu vrijednost možemo dodati na brojač ako je potrebno (cca. 3700)
+// vrijeme konverzije je između 200 us - tu vrijednost možemo dodati na brojač ako je potrebno
 char *timer_value_to_char_array(int64_t currentTime, bool addFunctionTime)
 {
     if (addFunctionTime)
-        currentTime += 3700;
+        currentTime += 200;
     char currentTimeCharArray[12];
     itoa(currentTime, currentTimeCharArray, 10);
     char *temp_my = NULL;
@@ -502,6 +506,8 @@ void timer_stop(bool resync) {
 ////////////// TASK FUNCTIONS /////////////
 ///////////////////////////////////////////
 
+// [ENG] function that turns the LED on/off
+// [HRV] funkcija paljenja/gašenja LED-ice
 void LED_control_task(void *ledPin)
 { // parameters can be empty
     int led_state = gpio_get_level(LED_PIN);
@@ -520,7 +526,8 @@ void LED_control_task(void *ledPin)
     // vTaskDelete(NULL);
 }
 
-// after the response from the client has been received, the timers are checked and reset
+// [ENG] after the response from the client has been received, the timers are checked and reset
+// [HRV] nakon primanja odgovora od klijenta, unutarnji brojači se provjeravaju i resetiraju po potrebi
 void timer_resync_task(void *params) {
     ESP_LOGE(TIMER_TAG,"\nResync timer is being activated - period time = %llu ms", timer_resync_period);  
     //ESP_ERROR_CHECK(esp_timer_start_periodic(timer_resync_handler, timer_resync_period)); // period time in microseconds
@@ -538,9 +545,8 @@ void timer_resync_task(void *params) {
             vTaskDelay(50 / portTICK_PERIOD_MS); // if the two timers are happening at the exactly same time - wait
         }
 
-        
             if (abs(abs(initial_client_server_clock_difference) - abs(last_server_timer_local_time - last_client_timer_local_time)) > 500 ) { // 500 us
-            // TODO: we can improve this by adding a delay of client receive time + client activate timer
+    
                 server_initiated_message = true;
                 server_message.s_time_send_message = esp_timer_get_time(); // sets the time of the sent message
                 int64_t temp_val = last_server_timer_local_time;
@@ -550,22 +556,20 @@ void timer_resync_task(void *params) {
                 timer_stop(false);
                 timer_start(false);
                 ESP_LOGE(TIMER_TAG,"\nTime difference = %lld\n", (temp_val - last_client_timer_local_time));
-                //printf("\nReal time difference = %lld\n", (server_client_clock_difference));
                 ESP_LOGE(TIMER_TAG,"\nInitial time difference = %lld\n", (initial_client_server_clock_difference));
                 ESP_LOGE(TIMER_TAG,"Timers have been restarted\n");
                 initial_client_server_clock_difference = 0;
             }
             else {
-                //printf("\nTime difference = %lld\n", (last_server_timer_local_time - last_client_timer_local_time));
-                //printf("Initial time difference = %lld\n", (initial_client_server_clock_difference));
                 ESP_LOGE(TIMER_TAG,"Timers are in order\n");
             }
         
         }
 
- 
 }
 
+// [ENG] function of receiving the keyboard input data and doing different actions based on different inputs
+// [HRV] funkcija zadatka primanja i prepoznavanja pristisnutih tipki s tipkovnice te odrađivanja različitih akcija na temelju istih
 void uart_task(void *pvParameters)
 {
     uart_event_t event;
@@ -608,39 +612,33 @@ void uart_task(void *pvParameters)
 
                     if (event.size <= (spp_mtu_size - 3)) // spp_mtu_size by default is 23
                     {
-                        // na pritisak tipke s tipkovnice odrađuju se različiti zadatci
 
-                        // if 'w' is pressed, the LED control will be delayed by x amount of ms
-                        // na pritisak tipke 'w' - odgađa se kontrola LED-ice za određeni broj ms - 40 je okvirno 'pola' trajanja poruke
+                        // [ENG] if 'w' is pressed, the LED control will be delayed by x amount of ms
+                        // [HRV] na pritisak tipke 'w' - odgađa se kontrola LED-ice za određeni broj ms - 40 je okvirno 'pola' trajanja poruke
                         if (memcmp(temp, keyboard_buttons.uart_compare_w, 1) == 0) {
                             server_message.s_time_send_message = esp_timer_get_time(); // sets the time of the sent message
                             esp_ble_gatts_send_indicate(spp_gatts_if, spp_conn_id, spp_handle_table[SPP_IDX_SPP_DATA_NTY_VAL], 12, (uint8_t *)responseArray, false); 
                             vTaskDelay(20 / portTICK_PERIOD_MS); // fixed value
                             LED_control_task((void *)LED_PIN); 
                         } 
-                        // if 'a' is pressed, the LED control will be delayed by the previous message travel time divided by 2
-                        // na pritisak tipke 'a' - odgađa se kontrola LED-ice za polovicu trajanja putovanja posljednje poruke (prvo se mora poslati neka druga poruka)
+                        // [ENG] if 'a' is pressed, the LED control will be delayed by the previous message travel time divided by 2
+                        // [HRV] na pritisak tipke 'a' - odgađa se kontrola LED-ice za polovicu trajanja putovanja posljednje poruke (prvo se mora poslati neka druga poruka)
                         else if (memcmp(temp, keyboard_buttons.uart_compare_a, 1) == 0) {
                             server_message.s_time_send_message = esp_timer_get_time(); // sets the time of the sent message
                             esp_ble_gatts_send_indicate(spp_gatts_if, spp_conn_id, spp_handle_table[SPP_IDX_SPP_DATA_NTY_VAL], 12, (uint8_t *)responseArray, false); 
                             vTaskDelay((server_message.s_time_last_message_travel_time/(2*1000)) / portTICK_PERIOD_MS);
                             LED_control_task((void *)LED_PIN); 
                         } 
-                        // if 's' is pressed, the client will reply with the timer value and response time, so the server can calculate
+                        // [ENG] if 's' is pressed, the client will reply with the timer value and response time, so the server can calculate
                         // the difference between timers
+                        // [HRV] na pritisak tipke 's' - klijent vraća vrijeme lokalnog brojača i vremena obrade tako da se može izračunati vrijeme razlike brojača
                         else if (memcmp(temp, keyboard_buttons.uart_compare_s, 1) == 0) {
                             server_message.s_time_send_message = esp_timer_get_time(); // sets the time of the sent message
                             esp_ble_gatts_send_indicate(spp_gatts_if, spp_conn_id, spp_handle_table[SPP_IDX_SPP_DATA_NTY_VAL], 12, (uint8_t *)responseArray, false); 
                             LED_control_task((void *)LED_PIN); 
                         } 
-                        else if (memcmp(temp, keyboard_buttons.uart_compare_d, 1) == 0) {
-                            LED_control_task((void *)LED_PIN); 
-                            server_message.s_time_send_message = esp_timer_get_time(); // sets the time of the sent message
-                            esp_ble_gatts_send_indicate(spp_gatts_if, spp_conn_id, spp_handle_table[SPP_IDX_SPP_DATA_NTY_VAL], 12, (uint8_t *)responseArray, false); 
-                            LED_control_task((void *)LED_PIN); 
-                        } 
-                        // if 't' is pressed, timer starts
-                        // na pritisak tipke 't' - pokretanje brojača
+                        // [ENG] if 't' is pressed, timer starts
+                        // [HRV] na pritisak tipke 't' - pokretanje brojača
                         else if (memcmp(temp, keyboard_buttons.uart_compare_t, 1) == 0) {
                             server_message.s_time_send_message = esp_timer_get_time(); // sets the time of the sent message
                             initial_client_server_clock_difference = 0;
@@ -652,38 +650,24 @@ void uart_task(void *pvParameters)
                         else if (memcmp(temp, keyboard_buttons.uart_compare_l, 1) == 0) {
                             vTaskDelay(60 / portTICK_PERIOD_MS);
                         }
-                        // if 'u' is pressed, timer stops
-                        // na pritisak tipke 'u' - zaustavljanje brojača 
+                        // [ENG] if 'u' is pressed, timer stops
+                        // [HRV] na pritisak tipke 'u' - zaustavljanje brojača 
                         else if (memcmp(temp, keyboard_buttons.uart_compare_u, 1) == 0) {
+                            LED_control_task((void *)LED_PIN); 
                             //server_message.s_time_send_message = esp_timer_get_time(); // sets the time of the sent message
                             esp_ble_gatts_send_indicate(spp_gatts_if, spp_conn_id, spp_handle_table[SPP_IDX_SPP_DATA_NTY_VAL], event.size, temp, false); 
                             timer_stop(true);
                             ESP_LOGE(TIMER_TAG,"\nSend u - Timer stopped");
                         } 
-                        // periodic sync on both - stop and start
-                        else if (memcmp(temp, keyboard_buttons.uart_compare_p, 1) == 0) {
-                            //server_message.s_time_send_message = esp_timer_get_time(); // sets the time of the sent message
-                            timer_stop(true);
-                            // ovo je okej samo sta se treba resyncat nakon ovog vremena
-                            esp_ble_gatts_send_indicate(spp_gatts_if, spp_conn_id, spp_handle_table[SPP_IDX_SPP_DATA_NTY_VAL], event.size, temp, false);
-                            LED_control_task((void *)LED_PIN); 
-                            if (server_message.s_time_last_message_travel_time > 0) {
-                                vTaskDelay((server_message.s_time_last_message_travel_time/(2*1000)) / portTICK_PERIOD_MS);
-                            } else {
-                                vTaskDelay(40 / portTICK_PERIOD_MS);
-                            }
-                            
-                            timer_start(true); 
-                            
-                            ESP_LOGE(TIMER_TAG,"\nPeriodic sync");
-                        }  
-                        // na pritisak tipke 'o' - gasi se logiranje događaja u konzoli
+                        // [ENG] 'o' - turns off additional logging in the terminal 
+                        // [HRV] na pritisak tipke 'o' - gasi se logiranje događaja u konzoli
                         else if (memcmp(temp, keyboard_buttons.uart_compare_o, 1) == 0) {
                             console_logging = !console_logging;
                         } 
 
                         
-                        // if anything else is pressed on the keyboard, that character will be sent
+                        // [ENG] if anything else is pressed on the keyboard, that character will be sent
+                        // [HRV] na pritisak bilo koje druge tipke, šalje se taj znak i sve se odvija bez sinkronizacije
                         else {
                             server_message.s_time_send_message = esp_timer_get_time(); // sets the time of the sent message
                             esp_ble_gatts_send_indicate(spp_gatts_if, spp_conn_id, spp_handle_table[SPP_IDX_SPP_DATA_NTY_VAL], event.size, temp, false);
@@ -1018,7 +1002,8 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
         }
         break;
 
-    // kod primanja poruke od klijenta poziva se ova funkcija
+    // [ENG] this function is called when the client sends the message towards the server
+    // [HRV] kod primanja poruke od klijenta poziva se ova funkcija
     // ako je server inicirao poruku, zapisat će se vrijeme primanja odgovora na poruku od klijenta i vrijeme trajanja putovanja poruke
     // ako je poruku inicirao klijent, zapisat će se vrijeme primanja poruke od klijenta
     case ESP_GATTS_WRITE_EVT:
@@ -1034,7 +1019,6 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
         //ESP_LOGE(TIMER_TAG, "Event received %lld", incomingEventTime);
         if (p_data->write.is_prep == false)
         {
-            // LED-ica se uapli/gasi ukoliko je klijent inicirao poruku
             if (console_logging) {
                 ESP_LOGI(GATTS_TABLE_TAG, "ESP_GATTS_WRITE_EVT : handle = %d\n", res);
             }
@@ -1042,7 +1026,8 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
                 LED_control_task((void *)LED_PIN);
             }
 
-        // ispis svih vremenskih varijabli vezanih uz slanje poruke
+        // [ENG] printing all time variables regarding message sending/receiving
+        // [HRV] ispis svih vremenskih varijabli vezanih uz slanje poruke
          if (server_initiated_message == true) {
             ESP_LOGE(TIMER_TAG,"MESSAGE TIMER - Send signal received %lld\n", server_message.s_time_send_signal);
             ESP_LOGE(TIMER_TAG,"MESSAGE TIMER - Send message %lld\n", server_message.s_time_send_message);
@@ -1081,8 +1066,10 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
                 esp_log_buffer_char(GATTS_TABLE_TAG, (char *)(p_data->write.value), p_data->write.len);
 #else
                 uart_write_bytes(UART_NUM_0, "\n", 1);
-                uart_write_bytes(UART_NUM_0, (char *)(p_data->write.value), p_data->write.len); // this is where the received input is written out to uart
+                uart_write_bytes(UART_NUM_0, (char *)(p_data->write.value), p_data->write.len);
                 
+                // [ENG] calculating and writing out all the important time data
+                // [HRV] računanje i ispisivanje svih važnih vremenskih vrijednosti
                 //char *responseArray = timer_value_to_char_array(serverResponseTime, true);
                 if (server_initiated_message == false) {
                     client_message.c_time_send_reply = esp_timer_get_time();
@@ -1118,13 +1105,8 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
                         static_delay_value = true;
                     } 
                     ESP_LOGE(TIMER_TAG, "Delay between two LEDs %d us\n", delay_value);
-                    
-
-                    
 
                 }
-                
-                // tu znaci mozemo vratiti odmah vrijednost timera i vidjeti koliko "otprilike" treba da se posalje poruka
                 uart_write_bytes(UART_NUM_0, "\n", 1);
 #endif
             }
