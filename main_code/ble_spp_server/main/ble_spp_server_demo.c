@@ -50,7 +50,6 @@ int64_t calculate_printf_duration();
 int64_t calculate_uart_write_bytes_duration();
 int64_t calculate_led_control_duration();
 void timer_callback(void *param);
-void timer_resync_callback(void *param);
 
 #define SPP_PROFILE_NUM 1
 #define SPP_PROFILE_APP_IDX 0
@@ -647,9 +646,6 @@ void uart_task(void *pvParameters)
                             timer_start(true);
                             ESP_LOGE(TIMER_TAG,"\nSend t - Timer enabled");
                         } 
-                        else if (memcmp(temp, keyboard_buttons.uart_compare_l, 1) == 0) {
-                            vTaskDelay(60 / portTICK_PERIOD_MS);
-                        }
                         // [ENG] if 'u' is pressed, timer stops
                         // [HRV] na pritisak tipke 'u' - zaustavljanje brojača 
                         else if (memcmp(temp, keyboard_buttons.uart_compare_u, 1) == 0) {
